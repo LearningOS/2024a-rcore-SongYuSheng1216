@@ -14,7 +14,11 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+// (add)
+use crate::syscall::process::TaskInfo;
+use crate::timer::get_time_ms;
+
+use crate::config::*;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
 use lazy_static::*;
@@ -32,6 +36,7 @@ pub use context::TaskContext;
 /// Most of `TaskManager` are hidden behind the field `inner`, to defer
 /// borrowing checks to runtime. You can see examples on how to use `inner` in
 /// existing functions on `TaskManager`.
+/// 任务管理器（管理全部的程序
 pub struct TaskManager {
     /// total number of tasks
     num_app: usize,
@@ -45,8 +50,16 @@ pub struct TaskManagerInner {
     tasks: [TaskControlBlock; MAX_APP_NUM],
     /// id of current `Running` task
     current_task: usize,
+    // task info list
+    tasks_info: [TaskInfo; MAX_APP_NUM],
 }
+// status
+// 这个的初始化，是TaskManagerInner初始化的时候来处理
+// 然后在TaskManagerInner切换的时候
+// 将原来的改为等待Ready，下一个task的status改为Running
 
+
+// 惰性创建一个全局变量
 lazy_static! {
     /// Global variable: TASK_MANAGER
     pub static ref TASK_MANAGER: TaskManager = {
@@ -59,12 +72,19 @@ lazy_static! {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
             task.task_status = TaskStatus::Ready;
         }
+        let tasks_info = [TaskInfo{
+            status: TaskStatus::Ready,
+            syscall_times : [0; MAX_SYSCALL_NUM],
+            time : 0,
+            start_time : 0,
+        }; MAX_APP_NUM];
         TaskManager {
             num_app,
             inner: unsafe {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    tasks_info,
                 })
             },
         }
@@ -81,6 +101,11 @@ impl TaskManager {
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
+        // (add) 这里需要修改tasks_info的status和记录此task第一次执行的时间
+        inner.tasks_info[0].status = TaskStatus::Running;
+        inner.tasks_info[0].start_time = get_time_ms();
+        inner.tasks_info[0].time = 0;
+
         drop(inner);
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
@@ -95,6 +120,8 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
         inner.tasks[current].task_status = TaskStatus::Ready;
+        // (add) 修改tasks_info的status
+        inner.tasks_info[current].status = TaskStatus::Ready;
     }
 
     /// Change the status of current `Running` task into `Exited`.
@@ -102,6 +129,8 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
         inner.tasks[current].task_status = TaskStatus::Exited;
+        // (add) 修改tasks_info的status
+        inner.tasks_info[current].status = TaskStatus::Exited;
     }
 
     /// Find next task to run and return task id.
@@ -122,6 +151,17 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            // (add) 在这里修改tasks_info的status和检查tasks_info的time是否设置
+            // 如果没有设置，则是第一次运行，设置其time
+            inner.tasks_info[next].status = TaskStatus::Running;
+            let start_time_current_task = inner.tasks_info[next].start_time;
+            if start_time_current_task == 0 {
+                inner.tasks_info[next].start_time = get_time_ms();
+            } else {
+                // 在每次调用task前，更新将要调用task的运行时间
+                inner.tasks_info[next].time = get_time_ms() - start_time_current_task;
+            }
+
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -135,7 +175,22 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    // 返回出current_task对应的tasks_info的可变引用出来
+    fn current_task_info(&self) -> *mut TaskInfo {
+        let mut inner = self.inner.exclusive_access();
+        let index = inner.current_task;
+        let current_task_info = &mut inner.tasks_info[index] as *mut TaskInfo;
+        drop(inner);
+        current_task_info
+    }
 }
+
+/// (add) ch3 ,get current task_info
+pub fn get_current_task_info() -> *mut TaskInfo {
+    TASK_MANAGER.current_task_info()
+}
+
 
 /// Run the first task in task list.
 pub fn run_first_task() {
