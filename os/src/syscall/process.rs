@@ -2,7 +2,7 @@
 #[allow(unused)]
 use crate::{
     config::MAX_SYSCALL_NUM,
-    task::{exit_current_and_run_next, suspend_current_and_run_next, TaskStatus, get_current_task_info},
+    task::{exit_current_and_run_next, suspend_current_and_run_next, TaskStatus, get_current_task_info, get_current_task_start_time},
     timer::{get_time_us, get_time_ms},
     syscall::{SYSCALL_YIELD, SYSCALL_EXIT, SYSCALL_GET_TIME, SYSCALL_TASK_INFO},
 };
@@ -25,8 +25,6 @@ pub struct TaskInfo {
     pub syscall_times: [u32; MAX_SYSCALL_NUM],
     /// Total running time of task
     pub time: usize,
-    /// the start time of running
-    pub start_time: usize,
 }
 
 // 各个数据的更改呢？
@@ -102,7 +100,7 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
         // 调用自身也要计数
         (*current_mut_task_info).syscall_times[SYSCALL_TASK_INFO] += 1;
         // 除了task切换时更新一次运行时间，这里调用了info时也更新一次
-        (*current_mut_task_info).time = get_time_ms() - (*current_mut_task_info).start_time;
+        (*current_mut_task_info).time = get_time_ms() - get_current_task_start_time();
         *_ti = *current_mut_task_info;
     }
     0

@@ -52,6 +52,8 @@ pub struct TaskManagerInner {
     current_task: usize,
     // task info list
     tasks_info: [TaskInfo; MAX_APP_NUM],
+    // task start time
+    tasks_start: [usize; MAX_APP_NUM],
 }
 // status
 // 这个的初始化，是TaskManagerInner初始化的时候来处理
@@ -76,8 +78,8 @@ lazy_static! {
             status: TaskStatus::Ready,
             syscall_times : [0; MAX_SYSCALL_NUM],
             time : 0,
-            start_time : 0,
         }; MAX_APP_NUM];
+        let tasks_start = [0; MAX_APP_NUM];
         TaskManager {
             num_app,
             inner: unsafe {
@@ -85,6 +87,7 @@ lazy_static! {
                     tasks,
                     current_task: 0,
                     tasks_info,
+                    tasks_start,
                 })
             },
         }
@@ -103,7 +106,7 @@ impl TaskManager {
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         // (add) 这里需要修改tasks_info的status和记录此task第一次执行的时间
         inner.tasks_info[0].status = TaskStatus::Running;
-        inner.tasks_info[0].start_time = get_time_ms();
+        inner.tasks_start[0] = get_time_ms();
         inner.tasks_info[0].time = 0;
 
         drop(inner);
@@ -154,12 +157,12 @@ impl TaskManager {
             // (add) 在这里修改tasks_info的status和检查tasks_info的time是否设置
             // 如果没有设置，则是第一次运行，设置其time
             inner.tasks_info[next].status = TaskStatus::Running;
-            let start_time_current_task = inner.tasks_info[next].start_time;
-            if start_time_current_task == 0 {
-                inner.tasks_info[next].start_time = get_time_ms();
+            let start_time_next_task = inner.tasks_start[next];
+            if start_time_next_task == 0 {
+                inner.tasks_start[next] = get_time_ms();
             } else {
                 // 在每次调用task前，更新将要调用task的运行时间
-                inner.tasks_info[next].time = get_time_ms() - start_time_current_task;
+                inner.tasks_info[next].time = get_time_ms() - start_time_next_task;
             }
 
             inner.current_task = next;
@@ -184,6 +187,15 @@ impl TaskManager {
         drop(inner);
         current_task_info
     }
+
+    // 返回current_task对应的tasks_start的值出来
+    fn current_task_start_time(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        let index = inner.current_task;
+        let current_task_start_time = inner.tasks_start[index];
+        drop(inner);
+        current_task_start_time
+    }
 }
 
 /// (add) ch3 ,get current task_info
@@ -191,6 +203,10 @@ pub fn get_current_task_info() -> *mut TaskInfo {
     TASK_MANAGER.current_task_info()
 }
 
+/// (add) ch3, get current task start time
+pub fn get_current_task_start_time() -> usize {
+    TASK_MANAGER.current_task_start_time()
+}
 
 /// Run the first task in task list.
 pub fn run_first_task() {
